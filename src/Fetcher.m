@@ -184,49 +184,110 @@
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.HTTPMethod = @"GET";
     req.cachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
-    [req setValue:@"mihomo/1.19.30" forHTTPHeaderField:@"User-Agent"];
+    [req setValue:@"clash.meta" forHTTPHeaderField:@"User-Agent"];
     [req setValue:@"text/plain, application/yaml, */*" forHTTPHeaderField:@"Accept"];
 
     NSURLSessionDataTask *task = [session dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         [session invalidateAndCancel];
-        if (error) {
-            completion(nil, [NSString stringWithFormat:@"连接失败 (%ld)", (long)error.code]);
-            return;
-        }
         NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
-        if (![http isKindOfClass:[NSHTTPURLResponse class]]) {
-            completion(nil, @"无效响应");
+        if (!error && [http isKindOfClass:[NSHTTPURLResponse class]] && http.statusCode == 200) {
+            NSString *headerVal = nil;
+            for (id key in http.allHeaderFields) {
+                if ([[key description].lowercaseString isEqualToString:@"subscription-userinfo"]) {
+                    headerVal = [http.allHeaderFields[key] description];
+                    break;
+                }
+            }
+            if (headerVal.length > 0) {
+                TrafficSnapshot *snap = [self parseUserinfo:headerVal providerId:provider.providerId];
+                if (snap) {
+                    completion(snap, nil);
+                    return;
+                }
+            }
+        }
+
+        // Fallback: ask local Clash/Mihomo external-controller (127.0.0.1:9090) if available
+        NSString *directErr = error
+            ? [NSString stringWithFormat:@"连接失败 (%ld)", (long)error.code]
+            : ([http isKindOfClass:[NSHTTPURLResponse class]]
+                ? (http.statusCode == 401 ? @"HTTP 401（服务端暂拒，沿用缓存）" : [NSString stringWithFormat:@"HTTP %ld", (long)http.statusCode])
+                : @"无效响应");
+
+        [self fetchFromLocalClashAPIForProvider:provider completion:^(TrafficSnapshot * _Nullable clashSnap) {
+            if (clashSnap) {
+                completion(clashSnap, nil);
+            } else {
+                completion(nil, directErr);
+            }
+        }];
+    }];
+    [task resume];
+}
+
++ (void)fetchFromLocalClashAPIForProvider:(VPNProviderConfig *)provider
+                               completion:(void (^)(TrafficSnapshot * _Nullable))completion {
+    NSURL *listURL = [NSURL URLWithString:@"http://127.0.0.1:9090/providers/proxies"];
+    NSURLSessionConfiguration *cfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+    cfg.timeoutIntervalForRequest = 4.0;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+
+    [[session dataTaskWithURL:listURL completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        if (err || !data) {
+            [session invalidateAndCancel];
+            completion(nil);
             return;
         }
-        if (http.statusCode != 200) {
-            if (http.statusCode == 401) {
-                completion(nil, @"HTTP 401（链接已失效，需更新）");
-            } else {
-                completion(nil, [NSString stringWithFormat:@"HTTP %ld", (long)http.statusCode]);
-            }
+        NSDictionary *json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        NSDictionary *providers = [json isKindOfClass:[NSDictionary class]] ? json[@"providers"] : nil;
+        if (![providers isKindOfClass:[NSDictionary class]]) {
+            [session invalidateAndCancel];
+            completion(nil);
             return;
         }
 
-        NSString *headerVal = nil;
-        for (id key in http.allHeaderFields) {
-            if ([[key description].lowercaseString isEqualToString:@"subscription-userinfo"]) {
-                headerVal = [http.allHeaderFields[key] description];
+        NSString *matchedKey = nil;
+        for (NSString *k in providers) {
+            if ([k.lowercaseString isEqualToString:provider.providerId.lowercaseString] ||
+                [k.lowercaseString isEqualToString:provider.name.lowercaseString]) {
+                matchedKey = k;
                 break;
             }
         }
-        if (headerVal.length == 0) {
-            completion(nil, @"响应头无流量信息");
+        if (!matchedKey) {
+            [session invalidateAndCancel];
+            completion(nil);
             return;
         }
 
-        TrafficSnapshot *snap = [self parseUserinfo:headerVal providerId:provider.providerId];
-        if (!snap) {
-            completion(nil, @"流量头解析失败");
-            return;
-        }
-        completion(snap, nil);
-    }];
-    [task resume];
+        NSString *encodedKey = [matchedKey stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
+        NSURL *putURL = [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:9090/providers/proxies/%@", encodedKey]];
+        NSMutableURLRequest *putReq = [NSMutableURLRequest requestWithURL:putURL];
+        putReq.HTTPMethod = @"PUT";
+        putReq.timeoutInterval = 12.0;
+
+        [[session dataTaskWithRequest:putReq completionHandler:^(NSData *d2, NSURLResponse *r2, NSError *e2) {
+            [[session dataTaskWithURL:listURL completionHandler:^(NSData *d3, NSURLResponse *r3, NSError *e3) {
+                [session invalidateAndCancel];
+                if (e3 || !d3) { completion(nil); return; }
+                NSDictionary *j3 = [NSJSONSerialization JSONObjectWithData:d3 options:0 error:nil];
+                NSDictionary *info = j3[@"providers"][matchedKey][@"subscriptionInfo"];
+                if (![info isKindOfClass:[NSDictionary class]] || !info[@"Total"]) {
+                    completion(nil);
+                    return;
+                }
+                TrafficSnapshot *snap = [[TrafficSnapshot alloc] init];
+                snap.providerId = provider.providerId;
+                snap.timestamp = [NSDate date];
+                snap.upload = [info[@"Upload"] longLongValue];
+                snap.download = [info[@"Download"] longLongValue];
+                snap.total = [info[@"Total"] longLongValue];
+                int64_t exp = [info[@"Expire"] longLongValue];
+                if (exp > 0) snap.expire = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)exp];
+                completion(snap);
+            }] resume];
+        }] resume];
+    }] resume];
 }
 
 @end
