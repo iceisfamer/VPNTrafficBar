@@ -267,6 +267,12 @@
         putReq.timeoutInterval = 12.0;
 
         [[session dataTaskWithRequest:putReq completionHandler:^(NSData *d2, NSURLResponse *r2, NSError *e2) {
+            NSHTTPURLResponse *putHTTP = (NSHTTPURLResponse *)r2;
+            if (e2 || ![putHTTP isKindOfClass:[NSHTTPURLResponse class]] || putHTTP.statusCode < 200 || putHTTP.statusCode >= 300) {
+                [session invalidateAndCancel];
+                completion(nil);
+                return;
+            }
             [[session dataTaskWithURL:listURL completionHandler:^(NSData *d3, NSURLResponse *r3, NSError *e3) {
                 [session invalidateAndCancel];
                 if (e3 || !d3) { completion(nil); return; }
