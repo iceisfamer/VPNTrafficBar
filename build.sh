@@ -20,6 +20,7 @@ clang \
   "$ROOT/src/TrafficDB.m" \
   "$ROOT/src/Fetcher.m" \
   "$ROOT/src/DashboardHTML.m" \
+  "$ROOT/src/LocalClashTracker.m" \
   "$ROOT/src/main.m" \
   -o "$MACOS/VPNTrafficBar"
 

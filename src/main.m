@@ -3,6 +3,7 @@
 #import "TrafficDB.h"
 #import "Fetcher.h"
 #import "DashboardHTML.h"
+#import "LocalClashTracker.h"
 
 @interface AppDelegate : NSObject <NSApplicationDelegate, WKScriptMessageHandler, WKNavigationDelegate>
 @property (nonatomic, strong) NSStatusItem *statusItem;
@@ -10,6 +11,7 @@
 @property (nonatomic, strong) WKWebView *webView;
 @property (nonatomic, strong) AppConfig *config;
 @property (nonatomic, strong) TrafficDB *db;
+@property (nonatomic, strong) LocalClashTracker *localTracker;
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *healthByProvider;
 @property (nonatomic, strong) NSDate *lastRefreshTime;
@@ -56,6 +58,12 @@
     [self updateMenuBarTitle];
     [self scheduleTimer];
     [self refreshAll];
+
+    __weak typeof(self) weakSelf = self;
+    self.localTracker = [[LocalClashTracker alloc] initWithDB:self.db providersProvider:^NSArray<VPNProviderConfig *> *{
+        return weakSelf.config.providers ?: @[];
+    }];
+    [self.localTracker start];
 }
 
 - (void)togglePopover:(id)sender {
@@ -224,6 +232,7 @@
 
     NSMutableArray *statusesJSON = [NSMutableArray array];
     NSMutableArray<NSNumber *> *allDailySums = [NSMutableArray arrayWithObjects:@0,@0,@0,@0,@0,@0,@0, nil];
+    NSMutableArray<NSNumber *> *allLocalDailySums = [NSMutableArray arrayWithObjects:@0,@0,@0,@0,@0,@0,@0, nil];
     NSArray<DailyUsageItem *> *templateDays = nil;
 
     for (VPNProviderConfig *p in self.config.providers) {
@@ -232,6 +241,11 @@
         int64_t u24 = [self.db usageForProvider:p.providerId since:since24h];
         int64_t uToday = [self.db usageForProvider:p.providerId since:dayStart];
         NSArray<DailyUsageItem *> *d7 = [self.db dailyUsage7DaysForProvider:p.providerId now:now];
+
+        int64_t lu24 = [self.db localUsageForProvider:p.providerId since:since24h];
+        int64_t luToday = [self.db localUsageForProvider:p.providerId since:dayStart];
+        NSArray<DailyUsageItem *> *ld7 = [self.db localDailyUsage7DaysForProvider:p.providerId now:now];
+
         if (!templateDays) templateDays = d7;
 
         NSMutableArray *d7JSON = [NSMutableArray array];
@@ -243,6 +257,15 @@
             [d7JSON addObject:@{ @"label": item.label, @"bytes": @(item.bytes) }];
         }
 
+        NSMutableArray *ld7JSON = [NSMutableArray array];
+        for (NSUInteger i = 0; i < ld7.count; i++) {
+            DailyUsageItem *item = ld7[i];
+            if (i < allLocalDailySums.count) {
+                allLocalDailySums[i] = @(allLocalDailySums[i].longLongValue + item.bytes);
+            }
+            [ld7JSON addObject:@{ @"label": item.label, @"bytes": @(item.bytes) }];
+        }
+
         NSMutableDictionary *st = [NSMutableDictionary dictionary];
         st[@"id"] = p.providerId;
         st[@"name"] = p.name;
@@ -250,6 +273,9 @@
         st[@"usage24h"] = @(u24);
         st[@"usageToday"] = @(uToday);
         st[@"daily7d"] = d7JSON;
+        st[@"local24h"] = @(lu24);
+        st[@"localToday"] = @(luToday);
+        st[@"localDaily7d"] = ld7JSON;
 
         if (snap) {
             NSMutableDictionary *latestDict = [NSMutableDictionary dictionaryWithDictionary:@{
@@ -266,11 +292,16 @@
     }
 
     NSMutableArray *allDailyJSON = [NSMutableArray array];
+    NSMutableArray *allLocalDailyJSON = [NSMutableArray array];
     if (templateDays) {
         for (NSUInteger i = 0; i < templateDays.count; i++) {
             [allDailyJSON addObject:@{
                 @"label": templateDays[i].label,
                 @"bytes": allDailySums[i]
+            }];
+            [allLocalDailyJSON addObject:@{
+                @"label": templateDays[i].label,
+                @"bytes": allLocalDailySums[i]
             }];
         }
     }
@@ -280,7 +311,8 @@
         @"lastRefreshLabel": self.lastRefreshTime ? [timeFmt stringFromDate:self.lastRefreshTime] : @"",
         @"config": [self.config toDictionary],
         @"statuses": statusesJSON,
-        @"allDaily7d": allDailyJSON
+        @"allDaily7d": allDailyJSON,
+        @"allLocalDaily7d": allLocalDailyJSON
     };
 
     NSData *jsonData = [NSJSONSerialization dataWithJSONObject:state options:0 error:nil];

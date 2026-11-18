@@ -40,7 +40,13 @@
         "  total INTEGER NOT NULL,"
         "  expire REAL"
         ");"
-        "CREATE INDEX IF NOT EXISTS idx_snapshots_provider_ts ON snapshots(provider_id, timestamp);";
+        "CREATE INDEX IF NOT EXISTS idx_snapshots_provider_ts ON snapshots(provider_id, timestamp);"
+        "CREATE TABLE IF NOT EXISTS local_hourly ("
+        "  hour_ts INTEGER NOT NULL,"
+        "  provider_id TEXT NOT NULL,"
+        "  bytes INTEGER NOT NULL DEFAULT 0,"
+        "  PRIMARY KEY(hour_ts, provider_id)"
+        ");";
     sqlite3_exec(_db, sql, NULL, NULL, NULL);
     return self;
 }
@@ -179,6 +185,90 @@
             }
         }
     }
+
+    NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+    fmt.dateFormat = @"MM/dd";
+
+    NSMutableArray<DailyUsageItem *> *out = [NSMutableArray array];
+    for (NSDate *day in orderedDays) {
+        DailyUsageItem *item = [[DailyUsageItem alloc] init];
+        item.date = day;
+        item.label = [cal isDateInToday:day] ? @"今天" : [fmt stringFromDate:day];
+        item.bytes = buckets[day].longLongValue;
+        [out addObject:item];
+    }
+    return out;
+}
+
+#pragma mark - Local Clash Hourly Tracking
+
+- (void)addLocalBytes:(int64_t)bytes forProvider:(NSString *)providerId atDate:(NSDate *)date {
+    if (bytes <= 0 || providerId.length == 0) return;
+    int64_t ts = (int64_t)[date timeIntervalSince1970];
+    int64_t hourTs = (ts / 3600) * 3600;
+    dispatch_sync(self.queue, ^{
+        const char *sql =
+            "INSERT INTO local_hourly (hour_ts, provider_id, bytes) VALUES (?, ?, ?) "
+            "ON CONFLICT(hour_ts, provider_id) DO UPDATE SET bytes = bytes + excluded.bytes;";
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(self->_db, sql, -1, &stmt, NULL) != SQLITE_OK) return;
+        sqlite3_bind_int64(stmt, 1, hourTs);
+        sqlite3_bind_text(stmt, 2, providerId.UTF8String, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 3, bytes);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    });
+}
+
+- (int64_t)localUsageForProvider:(NSString *)providerId since:(NSDate *)since {
+    int64_t sinceHour = ((int64_t)[since timeIntervalSince1970] / 3600) * 3600;
+    __block int64_t sum = 0;
+    dispatch_sync(self.queue, ^{
+        const char *sql = "SELECT COALESCE(SUM(bytes), 0) FROM local_hourly WHERE provider_id = ? AND hour_ts >= ?;";
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(self->_db, sql, -1, &stmt, NULL) != SQLITE_OK) return;
+        sqlite3_bind_text(stmt, 1, providerId.UTF8String, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 2, sinceHour);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            sum = sqlite3_column_int64(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    });
+    return sum;
+}
+
+- (NSArray<DailyUsageItem *> *)localDailyUsage7DaysForProvider:(NSString *)providerId now:(NSDate *)now {
+    NSCalendar *cal = [NSCalendar currentCalendar];
+    NSDate *todayStart = [cal startOfDayForDate:now];
+    NSDate *sevenDaysAgo = [cal dateByAddingUnit:NSCalendarUnitDay value:-6 toDate:todayStart options:0];
+    int64_t sinceTs = (int64_t)[sevenDaysAgo timeIntervalSince1970];
+
+    NSMutableDictionary<NSDate *, NSNumber *> *buckets = [NSMutableDictionary dictionary];
+    NSMutableArray<NSDate *> *orderedDays = [NSMutableArray array];
+    for (NSInteger offset = 0; offset < 7; offset++) {
+        NSDate *d = [cal dateByAddingUnit:NSCalendarUnitDay value:offset toDate:sevenDaysAgo options:0];
+        if (d) {
+            buckets[d] = @(0);
+            [orderedDays addObject:d];
+        }
+    }
+
+    dispatch_sync(self.queue, ^{
+        const char *sql = "SELECT hour_ts, bytes FROM local_hourly WHERE provider_id = ? AND hour_ts >= ?;";
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(self->_db, sql, -1, &stmt, NULL) != SQLITE_OK) return;
+        sqlite3_bind_text(stmt, 1, providerId.UTF8String, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 2, sinceTs);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            int64_t hTs = sqlite3_column_int64(stmt, 0);
+            int64_t b = sqlite3_column_int64(stmt, 1);
+            NSDate *day = [cal startOfDayForDate:[NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)hTs]];
+            if (buckets[day]) {
+                buckets[day] = @(buckets[day].longLongValue + MAX(0, b));
+            }
+        }
+        sqlite3_finalize(stmt);
+    });
 
     NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
     fmt.dateFormat = @"MM/dd";

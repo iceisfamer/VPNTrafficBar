@@ -212,6 +212,7 @@
     let STATE = null;
     let VIEW = 'dashboard';
     let CHART_FILTER = 'ALL';
+    let CHART_SOURCE = 'remote';
     let DRAFT = null;
 
     function fmtGB(bytes, dec = 1) {
@@ -272,6 +273,9 @@
               <span>24h: ${fmtGB(st.usage24h)} &nbsp;·&nbsp; 今日: ${fmtGB(st.usageToday)}</span>
               <span>${expText}</span>
             </div>
+            <div class="meta-row" style="margin-top:3px;color:var(--accent);">
+              <span>本机 Clash 实测: 24h ${fmtGB(st.local24h || 0)} &nbsp;·&nbsp; 今日 ${fmtGB(st.localToday || 0)}</span>
+            </div>
           `;
         }
         return `
@@ -286,9 +290,12 @@
       }).join('');
 
       // Chart data
+      const useLocal = (CHART_SOURCE === 'local');
       const days = (CHART_FILTER === 'ALL')
-        ? (STATE.allDaily7d || [])
-        : ((providers.find(p => p.id === CHART_FILTER) || {}).daily7d || STATE.allDaily7d || []);
+        ? (useLocal ? (STATE.allLocalDaily7d || []) : (STATE.allDaily7d || []))
+        : (useLocal
+            ? ((providers.find(p => p.id === CHART_FILTER) || {}).localDaily7d || STATE.allLocalDaily7d || [])
+            : ((providers.find(p => p.id === CHART_FILTER) || {}).daily7d || STATE.allDaily7d || []));
       const maxGB = Math.max(1, ...days.map(d => d.bytes / 1073741824)) * 1.18;
 
       const W = 330, H = 115, padL = 26, padR = 6, padT = 16, padB = 20;
@@ -336,7 +343,13 @@
           <div class="card">
             <div class="chart-head">
               <span class="prov-name">7 天每日消耗趋势</span>
-              <select onchange="CHART_FILTER=this.value;render();">${filterOpts}</select>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <select onchange="CHART_SOURCE=this.value;render();">
+                  <option value="remote" ${CHART_SOURCE==='remote'?'selected':''}>账单同步</option>
+                  <option value="local" ${CHART_SOURCE==='local'?'selected':''}>本机实测</option>
+                </select>
+                <select onchange="CHART_FILTER=this.value;render();">${filterOpts}</select>
+              </div>
             </div>
             <svg width="100%" viewBox="0 0 ${W} ${H}">${svgBars}</svg>
           </div>

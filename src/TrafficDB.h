@@ -25,6 +25,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable TrafficSnapshot *)latestSnapshotForProvider:(NSString *)providerId;
 - (int64_t)usageForProvider:(NSString *)providerId since:(NSDate *)since;
 - (NSArray<DailyUsageItem *> *)dailyUsage7DaysForProvider:(NSString *)providerId now:(NSDate *)now;
+
+// Local ClashX Meta (127.0.0.1:9090) per-hour traffic tracking
+- (void)addLocalBytes:(int64_t)bytes forProvider:(NSString *)providerId atDate:(NSDate *)date;
+- (int64_t)localUsageForProvider:(NSString *)providerId since:(NSDate *)since;
+- (NSArray<DailyUsageItem *> *)localDailyUsage7DaysForProvider:(NSString *)providerId now:(NSDate *)now;
 @end
 
 NS_ASSUME_NONNULL_END
