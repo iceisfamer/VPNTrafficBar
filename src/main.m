@@ -246,15 +246,20 @@
         int64_t luToday = [self.db localUsageForProvider:p.providerId since:dayStart];
         NSArray<DailyUsageItem *> *ld7 = [self.db localDailyUsage7DaysForProvider:p.providerId now:now];
 
+        int64_t effective24h = MAX(u24, lu24);
+        int64_t effectiveToday = MAX(uToday, luToday);
+
         if (!templateDays) templateDays = d7;
 
         NSMutableArray *d7JSON = [NSMutableArray array];
         for (NSUInteger i = 0; i < d7.count; i++) {
-            DailyUsageItem *item = d7[i];
+            int64_t rBytes = d7[i].bytes;
+            int64_t lBytes = (i < ld7.count) ? ld7[i].bytes : 0;
+            int64_t merged = MAX(rBytes, lBytes);
             if (i < allDailySums.count) {
-                allDailySums[i] = @(allDailySums[i].longLongValue + item.bytes);
+                allDailySums[i] = @(allDailySums[i].longLongValue + merged);
             }
-            [d7JSON addObject:@{ @"label": item.label, @"bytes": @(item.bytes) }];
+            [d7JSON addObject:@{ @"label": d7[i].label, @"bytes": @(merged) }];
         }
 
         NSMutableArray *ld7JSON = [NSMutableArray array];
@@ -266,21 +271,31 @@
             [ld7JSON addObject:@{ @"label": item.label, @"bytes": @(item.bytes) }];
         }
 
+        NSString *rawHealth = self.healthByProvider[p.providerId] ?: (snap ? @"ok" : @"pending");
+        BOOL isEstimated = NO;
+        int64_t localSinceSnap = 0;
+        if (snap && ![rawHealth isEqualToString:@"ok"] && lu24 > 0) {
+            isEstimated = YES;
+            localSinceSnap = [self.db localUsageForProvider:p.providerId since:snap.timestamp];
+        }
+
         NSMutableDictionary *st = [NSMutableDictionary dictionary];
         st[@"id"] = p.providerId;
         st[@"name"] = p.name;
-        st[@"health"] = self.healthByProvider[p.providerId] ?: (snap ? @"ok" : @"pending");
-        st[@"usage24h"] = @(u24);
-        st[@"usageToday"] = @(uToday);
+        st[@"health"] = isEstimated ? @"local_est" : rawHealth;
+        st[@"usage24h"] = @(effective24h);
+        st[@"usageToday"] = @(effectiveToday);
         st[@"daily7d"] = d7JSON;
         st[@"local24h"] = @(lu24);
         st[@"localToday"] = @(luToday);
         st[@"localDaily7d"] = ld7JSON;
 
         if (snap) {
+            int64_t estUsed = MIN(snap.total, snap.used + localSinceSnap);
+            int64_t estRem = MAX(0, snap.total - estUsed);
             NSMutableDictionary *latestDict = [NSMutableDictionary dictionaryWithDictionary:@{
-                @"used": @(snap.used),
-                @"remaining": @(snap.remaining),
+                @"used": @(estUsed),
+                @"remaining": @(estRem),
                 @"total": @(snap.total),
             }];
             if (snap.expire) {

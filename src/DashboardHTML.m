@@ -101,6 +101,7 @@
     text-overflow: ellipsis;
   }
   .badge.ok { background: var(--green-bg); color: var(--green); }
+  .badge.est { background: rgba(0, 122, 255, 0.14); color: var(--accent); }
   .badge.err { background: var(--red-bg); color: var(--red); }
   .badge.pending { background: var(--track); color: var(--sub); }
   .rem-row {
@@ -254,8 +255,8 @@
       let cardsHtml = providers.length === 0
         ? `<div class="card" style="color:var(--sub);font-size:12px;">尚未配置任何订阅源，请点击右上角「设置」→「+ 添加机场」填入订阅链接。</div>`
         : providers.map(st => {
-        const badgeCls = st.health === 'ok' ? 'ok' : (st.health === 'pending' ? 'pending' : 'err');
-        const badgeText = st.health === 'ok' ? '正常' : (st.health === 'pending' ? '等待中' : st.health);
+        const badgeCls = st.health === 'ok' ? 'ok' : (st.health === 'local_est' ? 'est' : (st.health === 'pending' ? 'pending' : 'err'));
+        const badgeText = st.health === 'ok' ? '正常' : (st.health === 'local_est' ? '实时推算' : (st.health === 'pending' ? '等待中' : st.health));
 
         let bodyHtml = `<div style="font-size:12px;color:var(--sub);margin-top:4px;">暂无流量数据，请在设置中检查或更新订阅链接。</div>`;
         if (st.latest) {
